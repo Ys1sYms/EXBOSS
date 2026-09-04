@@ -20,6 +20,7 @@ end
 local anchorController, anchorGroupOptions, anchorFrame
 local runtimeCollection, worldCollection, panelSurface, panelPreview, panelDock
 local worldEditing, sequence = false, 0
+local runtimeRendering, runtimeRenderPending = false, false
 local active = {}
 local ReapplyAll = nil
 local RemoveActive, ScheduleActiveExpiry, CancelActiveExpiry = nil, nil, nil
@@ -265,6 +266,24 @@ local function RenderCollection(collection, records, mode)
     end
     collection:SetItems(items, BuildLayout(DB()))
 end
+local function PruneRuntimeItems()
+    if not runtimeCollection then return end
+
+    local wanted, stale = {}, {}
+    for _, record in ipairs(active) do
+        wanted[tostring(record.id)] = true
+    end
+
+    for itemID in pairs(runtimeCollection:GetItems()) do
+        if not wanted[itemID] then
+            stale[#stale + 1] = itemID
+        end
+    end
+
+    for _, itemID in ipairs(stale) do
+        runtimeCollection:ReleaseItem(itemID)
+    end
+end
 local function EnsureRuntime()
     if anchorFrame then return end
     anchorFrame = EnsureAnchorController():Ensure()
@@ -277,7 +296,25 @@ end
 local function RenderRuntime()
     EnsureRuntime()
     if worldEditing then return end
-    RenderCollection(runtimeCollection, active, "runtime")
+
+    -- SetDurationObject may synchronously complete while ApplyItem is still
+    -- using the item. Defer the recursive render and any release until the
+    -- outer render has fully returned from the collection.
+    if runtimeRendering then
+        runtimeRenderPending = true
+        return
+    end
+
+    runtimeRendering = true
+    local ok, err = pcall(function()
+        repeat
+            runtimeRenderPending = false
+            RenderCollection(runtimeCollection, active, "runtime")
+        until not runtimeRenderPending
+        PruneRuntimeItems()
+    end)
+    runtimeRendering = false
+    if not ok then error(err, 0) end
     if #active > 0 then anchorFrame:Show() else anchorFrame:Hide() end
 end
 
@@ -383,7 +420,7 @@ function Countdown:Show(spec)
     while #active > math.min(3, math.max(1, math.floor(SafeNum(db.stackMax_1205, 2)))) do CancelActiveExpiry(active[#active]); table.remove(active) end
     RenderRuntime()
 end
-function Countdown:Stop() for index = #active, 1, -1 do CancelActiveExpiry(active[index]); active[index] = nil end; if runtimeCollection then runtimeCollection:SetItems({}, BuildLayout(DB())) end; if anchorFrame and not worldEditing then anchorFrame:Hide() end end
+function Countdown:Stop() for index = #active, 1, -1 do CancelActiveExpiry(active[index]); active[index] = nil end; if runtimeCollection then runtimeCollection:SetItems({}, BuildLayout(DB())); PruneRuntimeItems() end; if anchorFrame and not worldEditing then anchorFrame:Hide() end end
 function Countdown:RefreshVisuals() EnsureRuntime(); EnsureAnchorController():ApplyPosition(); ReapplyAll() end
 function Countdown:StartFramePicker() return EnsureAnchorController():StartFramePicker() end
 
